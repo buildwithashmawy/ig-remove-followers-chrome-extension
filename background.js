@@ -15,9 +15,14 @@ async function getSessionInfo() {
   const csrfCookie = cookies.find(c => c.name === 'csrftoken');
   const sessionCookie = cookies.find(c => c.name === 'sessionid');
 
+  // Build a full cookie header string — service worker fetch() doesn't
+  // attach cookies automatically, so we must send them manually.
+  const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
   return {
     csrfToken: csrfCookie ? csrfCookie.value : null,
     sessionId: sessionCookie ? sessionCookie.value : null,
+    cookieHeader,
     hasCookies: !!(csrfCookie && sessionCookie)
   };
 }
@@ -36,13 +41,13 @@ async function igFetch(url, options = {}) {
     'X-CSRFToken': session.csrfToken,
     'X-Requested-With': 'XMLHttpRequest',
     'X-IG-App-ID': '936619743392459',
+    'Cookie': session.cookieHeader,
     ...options.headers
   };
 
   const response = await fetch(url, {
     ...options,
-    headers,
-    credentials: 'include'
+    headers
   });
 
   if (!response.ok) {
@@ -75,23 +80,29 @@ async function checkLogin() {
       return { loggedIn: false };
     }
 
-    // Also get follower/following counts from the user's profile
-    const profileData = await igFetch(
-      `${IG_API}/users/web_profile_info/?username=${data.user.username}`,
-      {
-        headers: {
-          'Referer': `${IG_BASE}/${data.user.username}/`
-        }
-      }
-    );
-
     const user = data.user;
-    if (profileData.data && profileData.data.user) {
-      const profileUser = profileData.data.user;
-      user.follower_count = profileUser.edge_followed_by?.count || 0;
-      user.following_count = profileUser.edge_follow?.count || 0;
-      user.media_count = profileUser.edge_owner_to_timeline_media?.count || 0;
-      user.profile_pic_url = profileUser.profile_pic_url_hd || user.profile_pic_url;
+
+    // Try to get follower/following counts from the profile endpoint.
+    // This can fail (e.g. endpoint changed) — don't let it block login.
+    try {
+      const profileData = await igFetch(
+        `${IG_API}/users/web_profile_info/?username=${data.user.username}`,
+        {
+          headers: {
+            'Referer': `${IG_BASE}/${data.user.username}/`
+          }
+        }
+      );
+
+      if (profileData.data && profileData.data.user) {
+        const profileUser = profileData.data.user;
+        user.follower_count = profileUser.edge_followed_by?.count || 0;
+        user.following_count = profileUser.edge_follow?.count || 0;
+        user.media_count = profileUser.edge_owner_to_timeline_media?.count || 0;
+        user.profile_pic_url = profileUser.profile_pic_url_hd || user.profile_pic_url;
+      }
+    } catch (profileErr) {
+      console.warn('Could not fetch profile counts:', profileErr);
     }
 
     return { loggedIn: true, user };
