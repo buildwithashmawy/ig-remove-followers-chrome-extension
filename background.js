@@ -1,80 +1,112 @@
 /**
  * Instagram Follower Remover - Background Service Worker
- * Handles Instagram API communication using the logged-in session cookies.
+ *
+ * Uses chrome.scripting.executeScript with world: 'MAIN' to run fetch()
+ * inside the Instagram tab's page context. This guarantees cookies are
+ * included automatically — no manual Cookie header hacks needed.
  */
 
-// Instagram API helpers
-const IG_BASE = 'https://www.instagram.com';
 const IG_API = 'https://www.instagram.com/api/v1';
 
 /**
- * Get Instagram cookies and CSRF token for the current session.
+ * Find an open Instagram tab to execute API calls in.
  */
-async function getSessionInfo() {
-  const cookies = await chrome.cookies.getAll({ domain: '.instagram.com' });
-  const csrfCookie = cookies.find(c => c.name === 'csrftoken');
-  const sessionCookie = cookies.find(c => c.name === 'sessionid');
-
-  // Build a full cookie header string — service worker fetch() doesn't
-  // attach cookies automatically, so we must send them manually.
-  const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-
-  return {
-    csrfToken: csrfCookie ? csrfCookie.value : null,
-    sessionId: sessionCookie ? sessionCookie.value : null,
-    cookieHeader,
-    hasCookies: !!(csrfCookie && sessionCookie)
-  };
+async function findInstagramTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://www.instagram.com/*' });
+  if (tabs.length === 0) {
+    throw new Error('NO_IG_TAB');
+  }
+  return tabs[0].id;
 }
 
 /**
- * Make an authenticated request to Instagram's API.
+ * Get the CSRF token from cookies.
  */
-async function igFetch(url, options = {}) {
-  const session = await getSessionInfo();
+async function getCsrfToken() {
+  const cookie = await chrome.cookies.get({
+    url: 'https://www.instagram.com',
+    name: 'csrftoken'
+  });
+  return cookie ? cookie.value : '';
+}
 
-  if (!session.hasCookies) {
-    throw new Error('Not logged in to Instagram');
-  }
+/**
+ * Execute a fetch call inside the Instagram tab's MAIN world.
+ * The injected function runs in the page's JS context so all session
+ * cookies are sent automatically with credentials: 'include'.
+ */
+async function igFetch(url, method, extraHeaders) {
+  const tabId = await findInstagramTab();
+  const csrfToken = await getCsrfToken();
 
-  const headers = {
-    'X-CSRFToken': session.csrfToken,
-    'X-Requested-With': 'XMLHttpRequest',
-    'X-IG-App-ID': '936619743392459',
-    'Cookie': session.cookieHeader,
-    ...options.headers
-  };
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: async (fetchUrl, fetchMethod, csrf, hdrs) => {
+      try {
+        const res = await fetch(fetchUrl, {
+          method: fetchMethod,
+          headers: {
+            'X-CSRFToken': csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-IG-App-ID': '936619743392459',
+            ...hdrs
+          },
+          credentials: 'include'
+        });
 
-  const response = await fetch(url, {
-    ...options,
-    headers
+        if (!res.ok) {
+          return { __igError: true, status: res.status };
+        }
+
+        const data = await res.json();
+        return { __igError: false, data };
+      } catch (e) {
+        return { __igError: true, status: 0, message: e.message };
+      }
+    },
+    args: [url, method || 'GET', csrfToken, extraHeaders || {}]
   });
 
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
+  const result = results[0]?.result;
+
+  if (!result || result.__igError) {
+    const status = result?.status;
+    if (status === 401 || status === 403) {
       throw new Error('Session expired. Please log in to Instagram again.');
     }
-    if (response.status === 429) {
-      throw new Error('Rate limited. Please wait a few minutes.');
+    if (status === 429) {
+      throw new Error('Rate limited by Instagram. Please wait a few minutes.');
     }
-    throw new Error(`Instagram API error (${response.status})`);
+    throw new Error(result?.message || `Instagram API error (${status})`);
   }
 
-  return response.json();
+  return result.data;
 }
 
-/**
- * Check if user is logged in and get their profile info.
- */
+// ---- API Methods ----
+
 async function checkLogin() {
   try {
-    const session = await getSessionInfo();
-    if (!session.hasCookies) {
+    // Quick cookie check first
+    const sessionCookie = await chrome.cookies.get({
+      url: 'https://www.instagram.com',
+      name: 'sessionid'
+    });
+    if (!sessionCookie) {
       return { loggedIn: false };
     }
 
-    // Fetch current user info
-    const data = await igFetch(`${IG_API}/accounts/current_user/?edit=true`);
+    // Make sure there's an Instagram tab open
+    let tabId;
+    try {
+      tabId = await findInstagramTab();
+    } catch {
+      return { loggedIn: false, error: 'NO_IG_TAB' };
+    }
+
+    // Fetch current user info via the tab
+    const data = await igFetch(`${IG_API}/accounts/current_user/?edit=true`, 'GET');
 
     if (!data.user) {
       return { loggedIn: false };
@@ -82,27 +114,23 @@ async function checkLogin() {
 
     const user = data.user;
 
-    // Try to get follower/following counts from the profile endpoint.
-    // This can fail (e.g. endpoint changed) — don't let it block login.
+    // Try to enrich with follower/following counts (non-fatal)
     try {
       const profileData = await igFetch(
-        `${IG_API}/users/web_profile_info/?username=${data.user.username}`,
-        {
-          headers: {
-            'Referer': `${IG_BASE}/${data.user.username}/`
-          }
-        }
+        `${IG_API}/users/web_profile_info/?username=${encodeURIComponent(user.username)}`,
+        'GET',
+        { 'Referer': `https://www.instagram.com/${user.username}/` }
       );
 
       if (profileData.data && profileData.data.user) {
-        const profileUser = profileData.data.user;
-        user.follower_count = profileUser.edge_followed_by?.count || 0;
-        user.following_count = profileUser.edge_follow?.count || 0;
-        user.media_count = profileUser.edge_owner_to_timeline_media?.count || 0;
-        user.profile_pic_url = profileUser.profile_pic_url_hd || user.profile_pic_url;
+        const p = profileData.data.user;
+        user.follower_count = p.edge_followed_by?.count || 0;
+        user.following_count = p.edge_follow?.count || 0;
+        user.media_count = p.edge_owner_to_timeline_media?.count || 0;
+        user.profile_pic_url = p.profile_pic_url_hd || user.profile_pic_url;
       }
-    } catch (profileErr) {
-      console.warn('Could not fetch profile counts:', profileErr);
+    } catch (e) {
+      console.warn('Could not fetch profile counts:', e.message);
     }
 
     return { loggedIn: true, user };
@@ -112,26 +140,18 @@ async function checkLogin() {
   }
 }
 
-/**
- * Get a page of followers for the given user ID.
- */
-async function getFollowers(userId, maxId = null) {
+async function getFollowers(userId, maxId) {
   try {
     let url = `${IG_API}/friendships/${userId}/followers/?count=50`;
     if (maxId) {
-      url += `&max_id=${maxId}`;
+      url += `&max_id=${encodeURIComponent(maxId)}`;
     }
 
-    const data = await igFetch(url, {
-      headers: {
-        'Referer': `${IG_BASE}/`
-      }
-    });
+    const data = await igFetch(url, 'GET');
 
     return {
       users: data.users || [],
-      next_max_id: data.next_max_id || null,
-      status: data.status
+      next_max_id: data.next_max_id || null
     };
   } catch (err) {
     console.error('getFollowers error:', err);
@@ -139,21 +159,12 @@ async function getFollowers(userId, maxId = null) {
   }
 }
 
-/**
- * Remove a follower by their user ID.
- * Uses the "remove follower" endpoint (different from unfollowing).
- */
 async function removeFollower(userId) {
   try {
     const data = await igFetch(
       `${IG_API}/friendships/remove_follower/${userId}/`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Referer': `${IG_BASE}/`
-        }
-      }
+      'POST',
+      { 'Content-Type': 'application/x-www-form-urlencoded' }
     );
 
     return { success: true, status: data.status };
@@ -167,21 +178,17 @@ async function removeFollower(userId) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { action, ...data } = message;
 
-  switch (action) {
-    case 'checkLogin':
-      checkLogin().then(sendResponse);
-      return true; // async
+  const handler = {
+    checkLogin: () => checkLogin(),
+    getFollowers: () => getFollowers(data.userId, data.maxId),
+    removeFollower: () => removeFollower(data.userId)
+  }[action];
 
-    case 'getFollowers':
-      getFollowers(data.userId, data.maxId).then(sendResponse);
-      return true;
-
-    case 'removeFollower':
-      removeFollower(data.userId).then(sendResponse);
-      return true;
-
-    default:
-      sendResponse({ error: 'Unknown action' });
-      return false;
+  if (handler) {
+    handler().then(sendResponse);
+    return true; // keep message channel open for async response
   }
+
+  sendResponse({ error: 'Unknown action' });
+  return false;
 });

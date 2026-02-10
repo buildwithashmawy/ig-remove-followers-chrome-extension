@@ -358,12 +358,27 @@
   });
 
   // ---- Initialize ----
+  function showLoginError(errorCode) {
+    const title = document.getElementById('login-error-title');
+    const desc = document.getElementById('login-error-desc');
+
+    if (errorCode === 'NO_IG_TAB') {
+      title.textContent = 'No Instagram Tab Open';
+      desc.textContent = 'Please open Instagram in a browser tab and keep it open, then click this extension again.';
+    } else {
+      title.textContent = 'Not Logged In';
+      desc.textContent = 'Please open Instagram and log in to your account first, then reopen this extension.';
+    }
+
+    showScreen(screenNotLoggedIn);
+  }
+
   async function init() {
     try {
       const response = await sendMessage('checkLogin');
 
       if (!response || !response.loggedIn) {
-        showScreen(screenNotLoggedIn);
+        showLoginError(response?.error);
         return;
       }
 
@@ -381,7 +396,7 @@
       loadFollowers(true);
     } catch (err) {
       console.error('Init error:', err);
-      showScreen(screenNotLoggedIn);
+      showLoginError();
     }
   }
 
