@@ -73,10 +73,23 @@
       </div>
     </div>
 
+    <!-- Quick Action: Remove All -->
+    <div class="card quick-action-card">
+      <button id="btn-remove-all" class="btn btn-danger btn-remove-all">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <line x1="19" y1="10" x2="23" y2="10"/>
+        </svg>
+        Remove All Followers
+      </button>
+      <p class="quick-action-hint">Automatically fetches and removes every follower. Runs in the background &mdash; you can close this popup.</p>
+    </div>
+
     <!-- Followers List Card -->
     <div class="card">
       <div class="card-header">
-        <h2>Your Followers</h2>
+        <h2>Or Select Specific Followers</h2>
         <div class="card-actions">
           <button id="btn-select-all" class="btn btn-ghost btn-sm">Select All</button>
           <button id="btn-refresh" class="btn btn-ghost btn-sm" title="Refresh list">
@@ -126,8 +139,8 @@
     </div>
   </div>
 
-  <!-- Removing Screen -->
-  <div id="screen-removing" class="screen hidden">
+  <!-- Progress Screen -->
+  <div id="screen-progress" class="screen hidden">
     <div class="header">
       <div class="logo">
         <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -141,7 +154,7 @@
 
     <div class="card">
       <div class="progress-section">
-        <div class="progress-icon">
+        <div class="progress-icon" id="progress-icon">
           <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="var(--primary)" stroke-width="1.5">
             <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
             <circle cx="8.5" cy="7" r="4"/>
@@ -149,7 +162,7 @@
           </svg>
         </div>
         <h2 id="progress-title">Removing Followers...</h2>
-        <p id="progress-subtitle" class="text-muted">Please keep this popup open.</p>
+        <p id="progress-subtitle" class="text-muted">Running in the background. You can close this popup safely.</p>
 
         <div class="progress-bar-container">
           <div class="progress-bar">

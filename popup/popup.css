@@ -386,6 +386,29 @@ body::-webkit-scrollbar-thumb {
   max-width: 260px;
 }
 
+/* ---- Quick Action Card ---- */
+.quick-action-card {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-remove-all {
+  width: 100%;
+  padding: 12px 20px;
+  font-size: 14px;
+  border-radius: var(--radius-sm);
+}
+
+.quick-action-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+  line-height: 1.5;
+}
+
 /* ---- Buttons ---- */
 .btn {
   display: inline-flex;
