@@ -88,7 +88,7 @@ async function igFetch(url, method, extraHeaders) {
 
 async function checkLogin() {
   try {
-    // Quick cookie check first
+    // Check for session cookie
     const sessionCookie = await chrome.cookies.get({
       url: 'https://www.instagram.com',
       name: 'sessionid'
@@ -97,41 +97,33 @@ async function checkLogin() {
       return { loggedIn: false };
     }
 
+    // Get user ID from ds_user_id cookie (always present when logged in)
+    const userIdCookie = await chrome.cookies.get({
+      url: 'https://www.instagram.com',
+      name: 'ds_user_id'
+    });
+    if (!userIdCookie) {
+      return { loggedIn: false };
+    }
+    const userId = userIdCookie.value;
+
     // Make sure there's an Instagram tab open
-    let tabId;
     try {
-      tabId = await findInstagramTab();
+      await findInstagramTab();
     } catch {
       return { loggedIn: false, error: 'NO_IG_TAB' };
     }
 
-    // Fetch current user info via the tab
-    const data = await igFetch(`${IG_API}/accounts/current_user/?edit=true`, 'GET');
+    // Fetch user info using their numeric ID
+    const data = await igFetch(`${IG_API}/users/${userId}/info/`, 'GET');
 
     if (!data.user) {
       return { loggedIn: false };
     }
 
     const user = data.user;
-
-    // Try to enrich with follower/following counts (non-fatal)
-    try {
-      const profileData = await igFetch(
-        `${IG_API}/users/web_profile_info/?username=${encodeURIComponent(user.username)}`,
-        'GET',
-        { 'Referer': `https://www.instagram.com/${user.username}/` }
-      );
-
-      if (profileData.data && profileData.data.user) {
-        const p = profileData.data.user;
-        user.follower_count = p.edge_followed_by?.count || 0;
-        user.following_count = p.edge_follow?.count || 0;
-        user.media_count = p.edge_owner_to_timeline_media?.count || 0;
-        user.profile_pic_url = p.profile_pic_url_hd || user.profile_pic_url;
-      }
-    } catch (e) {
-      console.warn('Could not fetch profile counts:', e.message);
-    }
+    // Ensure pk is set (used for follower fetching)
+    user.pk = user.pk || userId;
 
     return { loggedIn: true, user };
   } catch (err) {
